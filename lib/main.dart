@@ -521,6 +521,64 @@ class _ShellState extends State<Shell> with TickerProviderStateMixin {
   void _abrirCobro(BuildContext context) async {
     final lineas = carritos[ventasTabs.index];
     if (lineas.isEmpty) { _snack('No hay productos en la venta'); return; }
+
+    final excedidas = <Map<String, dynamic>>[];
+    for (final l in lineas) {
+      final p = repo.productos.firstWhere((x) => x.id == l.producto.id, orElse: () => l.producto);
+      final disponible = p.stock.toDouble();
+      final pedida = l.cantidad;
+      if (pedida > disponible) {
+        excedidas.add({
+          'nombre': p.nombre,
+          'pedida': pedida,
+          'stock': disponible,
+        });
+      }
+    }
+
+    if (excedidas.isNotEmpty) {
+        final seguir = await showDialog<bool>(
+          context: context,
+          builder: (d) => AlertDialog(
+            title: const Text('Cantidades mayores al stock'),
+            content: SizedBox(
+              width: 420,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('Se ajustarán a lo disponible:'),
+                  const SizedBox(height: 8),
+                  ...excedidas.map((e) => Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      '• ${e['nombre']} — pedido: ${e['pedida']}  stock: ${e['stock']}',
+                      maxLines: 2,
+                    ),
+                  )),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(d, false), child: const Text('Cancelar')),
+              FilledButton(onPressed: () => Navigator.pop(d, true), child: const Text('Ajustar y continuar')),
+            ],
+          ),
+        );
+
+    if (seguir != true) return;
+
+    // Ajuste automático al stock real
+    setState(() {
+      for (final l in lineas) {
+        final p = repo.productos.firstWhere((x) => x.id == l.producto.id, orElse: () => l.producto);
+        final disponible = p.stock.toDouble();
+        if (l.cantidad > disponible) {
+          l.cantidad = p.esGranel ? disponible : disponible.floorToDouble();
+        }
+      }
+    });
+  }
+
     final total = _subtotal(lineas);
     final efectivo = await showDialog<double>(context: context, builder: (ctx) => _CobroDialog(total: total));
     if (efectivo == null) return;
@@ -611,8 +669,24 @@ class _ShellState extends State<Shell> with TickerProviderStateMixin {
   }
     final cart = carritos[ventasTabs.index];
     final idx = cart.indexWhere((l) => l.producto.id == p.id);
-    if (idx >= 0) { setState(() => cart[idx].cantidad += 1); }
-    else { setState(() => cart.add(LineaVenta(producto: p, cantidad: 1))); }
+
+    final max = p.esGranel
+      ? p.stock.toDouble()
+      : p.stock.floorToDouble();
+
+    if (idx >= 0) 
+    { 
+      final l = cart[idx];
+      double nueva = l.cantidad + 1;
+      if (!p.esGranel) nueva = nueva.floorToDouble();
+      if (nueva > max) nueva = max; // ← tope por stock real
+      setState(() => l.cantidad = nueva);
+    }
+    else { 
+      final inicial = p.esGranel ? 1.0 : 1.0;
+      final cantidad = inicial > max ? max : inicial;
+      setState(() => cart.add(LineaVenta(producto: p, cantidad: cantidad)));
+      }
   }
 
   void _snack(String msg) => ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
@@ -657,7 +731,7 @@ class _VentasPageState extends State<_VentasPage> {
       Expanded(flex: 6, child: Column(children: [
         const SizedBox(height: 8), _TabsProductos(onChanged: (i)=>setState(()=>tab=i)), const SizedBox(height: 8),
 
-        Expanded(child: _GridProductos(productos: productos, onAdd: widget.onAdd, onToggleFav: widget.onToggleFav, disponibleVirtual: _disponibleVirtual,)),
+        Expanded(child: _GridProductos(productos: productos, onAdd: widget.onAdd, onToggleFav: widget.onToggleFav,)),
 
       ])),
       Container(width: 1, color: Colors.grey.shade300),
@@ -673,31 +747,16 @@ class _VentasPageState extends State<_VentasPage> {
                 final l = widget.carritos[i][ix];
                 final p = l.producto;
 
-                // Reservado por otras líneas del mismo producto en este carrito (excluyendo la actual)
-                final reservadoOtros = widget.carritos[i]
-                    .asMap()
-                    .entries
-                    .where((e) => e.key != ix && e.value.producto.id == p.id)
-                    .fold<double>(0, (a, e) => a + e.value.cantidad);
-
-                // Máximo que puede tener esta línea sin exceder stock real
-                final maxParaEstaLinea = p.stock - reservadoOtros;
                 double valor = (nueva.isNaN ? l.cantidad : nueva);
+                if (valor < 0) valor = 0;
 
-                if (p.esGranel) {
-                  valor = valor.clamp(0, maxParaEstaLinea);
-                } else {
-                  valor = valor.clamp(0, maxParaEstaLinea).floorToDouble();
-                }
+                final max = p.esGranel
+                    ? p.stock.toDouble()
+                    : p.stock.floorToDouble();
 
+                valor = valor.clamp(0, max);
                 setState(() => l.cantidad = valor);
-
-                if (valor != nueva) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Ajustado al stock disponible')),
-                  );
-                }
-              },
+              }
             )),
           ),
         ),
@@ -712,19 +771,6 @@ class _VentasPageState extends State<_VentasPage> {
   int _numProductos(List<LineaVenta> l)=> l.fold(0, (a,e)=>a+e.cantidad.toInt());
   double _subtotal(List<LineaVenta> l)=> l.fold(0.0, (a,e)=>a+e.subtotal);
 
-  double _reservadoDe(String productoId) {
-  final cart = widget.carritos[widget.ventasTabs.index];
-  return cart
-      .where((l) => l.producto.id == productoId)
-      .fold<double>(0, (a, l) => a + l.cantidad);
-  }
-
-  double _disponibleVirtual(Producto p) {
-  final reservado = _reservadoDe(p.id);
-  final disp = p.stock - reservado;
-  return disp < 0 ? 0 : disp;
-  }
-
 }
 
 class _TabsProductos extends StatelessWidget {
@@ -737,15 +783,15 @@ class _TabsProductos extends StatelessWidget {
 }
 
 class _GridProductos extends StatelessWidget {
-  final List<Producto> productos; final void Function(Producto) onAdd; final void Function(Producto) onToggleFav; final double Function(Producto) disponibleVirtual;
-
+  final List<Producto> productos; 
+  final void Function(Producto) onAdd; 
+  final void Function(Producto) onToggleFav; 
 
   const _GridProductos({
     super.key,
     required this.productos,
     required this.onAdd,
     required this.onToggleFav,
-    required this.disponibleVirtual,
   });
 
   Widget _img(Producto p) {
@@ -762,8 +808,7 @@ class _GridProductos extends StatelessWidget {
         itemCount: productos.length,
         itemBuilder: (_, i) {
           final p = productos[i];
-          final disp = disponibleVirtual(p);
-          final agotado = disp <= 0;
+          final agotado = p.stock <= 0;
           return Card(
             clipBehavior: Clip.antiAlias,
             child: InkWell(
@@ -825,8 +870,8 @@ class _GridProductos extends StatelessWidget {
                           ],
                         ),
                         // 👇 opcional: mostrar stock
-                        Text('Stock: ${disp.toStringAsFixed(p.esGranel ? 3 : 0)}',
-                        style: TextStyle(color: agotado ? Colors.red : Colors.black54, fontSize: 12,
+                        Text('Stock: ${p.stock}',
+                        style: TextStyle(color: agotado ? Colors.red : Colors.black54, fontSize: 12
                         )),
                       ],
                     ),
@@ -887,13 +932,14 @@ class _CarritoView extends StatelessWidget {
             IconButton(
               icon: const Icon(Icons.add_circle_outline),
               onPressed: () {
-                if (!l.producto.esGranel && l.cantidad >= l.producto.stock) {
-                  // opcional: muestra aviso
-                  // ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No hay más stock')));
-                  return;
-                }
-                onCantidadChange(i, l.cantidad + 1);
-              }
+              final max = l.producto.esGranel
+                  ? l.producto.stock.toDouble()
+                  : l.producto.stock.floorToDouble();
+              double nueva = l.cantidad + 1;
+              if (!l.producto.esGranel) nueva = nueva.floorToDouble();
+              if (nueva > max) nueva = max; // ← tope por stock real
+              onCantidadChange(i, nueva);      
+              },
             )
         ]),
       );
