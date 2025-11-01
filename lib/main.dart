@@ -5,6 +5,8 @@ import 'package:image_picker/image_picker.dart';
 import 'package:pdf/pdf.dart' as pwlib;
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
+import 'package:http/http.dart' as http;
+import 'package:csv/csv.dart';
 
 void main() => runApp(const GarzaApp());
 
@@ -466,7 +468,114 @@ class Repo extends ChangeNotifier {
     Producto(id:'p4', nombre:'CIEL AGUA PURIFICADA', sku:'AGUACIEL600', presentacion:'600 ML', precioCompra:6, precioVenta:9, stock:33, alertaMin:5, fav:true, esGranel:false),
     Producto(id:'p5', nombre:'ARROZ', sku:'ARROZKG', presentacion:'A GRANEL', precioCompra:25, precioVenta:35, stock:20, alertaMin:5, esGranel:true),
   ];
+
+  bool _parseBool(dynamic v) {
+  final s = (v ?? '').toString().trim().toLowerCase();
+  return s == 'true' || s == '1' || s == 'sí' || s == 'si' || s == 'yes';
+  }
+
+  double _parseDouble(dynamic v) => (v == null || v.toString().trim().isEmpty)
+      ? 0.0
+      : double.tryParse(v.toString().replaceAll(',', '.')) ?? 0.0;
+
+  int _parseInt(dynamic v) => (v == null || v.toString().trim().isEmpty)
+      ? 0
+      : int.tryParse(v.toString().split('.').first) ?? 0;
+
+  /// Sincroniza productos desde un CSV público de Google Sheets.
+  /// Hace merge por SKU (si coincide, actualiza; si no, crea).
+  Future<(int actualizados, int nuevos)> syncProductosDesdeCsv(String csvUrl) async {
+    final resp = await http.get(Uri.parse(csvUrl));
+    if (resp.statusCode != 200) {
+      throw Exception('No se pudo descargar el CSV (${resp.statusCode})');
+    }
+
+    final rows = const CsvToListConverter(
+      eol: '\n',
+      fieldDelimiter: ',',
+      shouldParseNumbers: false,
+    ).convert(resp.body);
+
+    if (rows.isEmpty) return (0, 0);
+
+    // Mapear encabezados
+    final headers = rows.first.map((e) => e.toString().trim()).toList();
+    int idx(String name) => headers.indexWhere((h) => h.toLowerCase() == name.toLowerCase());
+
+    final iId            = idx('id');
+    final iNombre        = idx('nombre');
+    final iSku           = idx('sku');
+    final iPresentacion  = idx('presentacion');
+    final iPrecioCompra  = idx('precioCompra');
+    final iPrecioVenta   = idx('precioVenta');
+    final iStock         = idx('stock');
+    final iAlertaMin     = idx('alertaMin');
+    final iVisible       = idx('visible');
+    final iImageUrl      = idx('imageUrl');
+    final iEsGranel      = idx('esGranel');
+
+    int updated = 0, created = 0;
+
+    for (var r = 1; r < rows.length; r++) {
+      final row = rows[r];
+      String getS(int i) => (i >= 0 && i < row.length) ? (row[i]?.toString() ?? '').trim() : '';
+
+      final id           = getS(iId).isNotEmpty ? getS(iId) : 'p_${DateTime.now().microsecondsSinceEpoch}';
+      final nombre       = getS(iNombre);
+      final sku          = getS(iSku);
+      final present      = getS(iPresentacion);
+      final pc           = _parseDouble(iPrecioCompra >= 0 ? row[iPrecioCompra] : null);
+      final pv           = _parseDouble(iPrecioVenta  >= 0 ? row[iPrecioVenta]  : null);
+      final stk          = _parseInt(iStock >= 0 ? row[iStock] : null);
+      final alerta       = _parseDouble(iAlertaMin >= 0 ? row[iAlertaMin] : null);
+      final visible      = _parseBool(iVisible >= 0 ? row[iVisible] : null);
+      final imageUrl     = getS(iImageUrl);
+      final esGranel     = _parseBool(iEsGranel >= 0 ? row[iEsGranel] : null);
+
+      // Mínimos requeridos
+      if (nombre.isEmpty || sku.isEmpty) continue;
+
+      // Merge por SKU
+      final idxExistente = _productos.indexWhere((p) => p.sku.toLowerCase() == sku.toLowerCase());
+      if (idxExistente >= 0) {
+        final p = _productos[idxExistente];
+        p.nombre        = nombre;
+        p.presentacion  = present;
+        p.precioCompra  = pc;
+        p.precioVenta   = pv;
+        p.stock         = stk;
+        p.alertaMin     = alerta;
+        p.visible       = visible;
+        p.imageUrl      = imageUrl.isEmpty ? null : imageUrl;
+        p.esGranel      = esGranel;
+        updated++;
+      } else {
+        _productos.add(Producto(
+          id: id,
+          nombre: nombre,
+          sku: sku,
+          presentacion: present,
+          precioCompra: pc,
+          precioVenta: pv,
+          stock: stk,
+          alertaMin: alerta,
+          visible: visible,
+          imageUrl: imageUrl.isEmpty ? null : imageUrl,
+          esGranel: esGranel,
+        ));
+        created++;
+      }
+    }
+
+    await saveProductos();
+    notifyListeners();
+    return (updated, created);
+  }
 }
+
+
+
+
 
 // ===================== SHELL =====================
 class Shell extends StatefulWidget { const Shell({super.key}); @override State<Shell> createState() => _ShellState(); }
@@ -1822,21 +1931,48 @@ class _InventarioScreenState extends State<InventarioScreen> {
 
   @override
   Widget build(BuildContext context) {
+
+
+
     return Scaffold(
-      appBar: AppBar(title: const Text('Inventario'), actions: [
-        Row(children: [
-          const Text('Ver: ', style: TextStyle(fontWeight: FontWeight.w600)),
-          DropdownButton<String>(value: _filtroVer, onChanged: (v) => setState(() { _filtroVer = v ?? 'Todos'; _ds = ProductosDataSource(context, widget.repo, _filtered(), onChanged: _refreshFromSource); }), items: const [
-            DropdownMenuItem(value: 'Todos', child: Text('Todos')),
-            DropdownMenuItem(value: 'Visibles', child: Text('Visibles')),
-            DropdownMenuItem(value: 'Ocultos', child: Text('Ocultos')),
-            DropdownMenuItem(value: 'Con alerta', child: Text('Con alerta')),
+      appBar: AppBar(
+        title: const Text('Inventario'), 
+        actions: [
+          Row(children: [
+            const Text('Ver: ', style: TextStyle(fontWeight: FontWeight.w600)),
+            DropdownButton<String>(value: _filtroVer, onChanged: (v) => setState(() { _filtroVer = v ?? 'Todos'; _ds = ProductosDataSource(context, widget.repo, _filtered(), onChanged: _refreshFromSource); }), items: const [
+              DropdownMenuItem(value: 'Todos', child: Text('Todos')),
+              DropdownMenuItem(value: 'Visibles', child: Text('Visibles')),
+              DropdownMenuItem(value: 'Ocultos', child: Text('Ocultos')),
+              DropdownMenuItem(value: 'Con alerta', child: Text('Con alerta')),
+            ]),
+            const SizedBox(width: 12),
+            FilledButton.icon(onPressed: _abrirAgregarProducto, icon: const Icon(Icons.add), label: const Text('Agregar Producto')),
+            const SizedBox(width: 12),
           ]),
-          const SizedBox(width: 12),
-          FilledButton.icon(onPressed: _abrirAgregarProducto, icon: const Icon(Icons.add), label: const Text('Agregar Producto')),
-          const SizedBox(width: 12),
-        ]),
-      ],
+          IconButton(
+            tooltip: 'Sincronizar desde Google Sheets',
+            icon: const Icon(Icons.sync),
+            onPressed: () async {
+              const csvUrl = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vSA82CpM6K1ZyZPEOm6Mj7WJbyPKvw9ZL2ZcL-iadf4PHuepr7JW-SgU2WwUIs1hc7qbnsxIgAImKwh/pub?gid=0&single=true&output=csv';
+              try {
+                final (a, n) = await widget.repo.syncProductosDesdeCsv(csvUrl);
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Sincronizado: $a actualizados, $n nuevos')),
+                  );
+                }
+              } catch (e) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Error al sincronizar: $e')),
+                  );
+                }
+              }
+            },
+          ),
+        ],
+
       bottom: PreferredSize(preferredSize: const Size.fromHeight(56), child: Padding(padding: const EdgeInsets.fromLTRB(16,0,16,12), child: TextField(
         controller: _search, onChanged: (_)=> setState(() { _ds = ProductosDataSource(context, widget.repo, _filtered(), onChanged: _refreshFromSource); }),
         decoration: InputDecoration(filled: true, hintText: 'Buscar producto por nombre o código...', prefixIcon: const Icon(Icons.search), suffixIcon: IconButton(icon: const Icon(Icons.mic), onPressed: () {}), border: OutlineInputBorder(borderRadius: BorderRadius.circular(24)), isDense: true,),
