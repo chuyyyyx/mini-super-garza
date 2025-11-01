@@ -597,70 +597,185 @@ class _ShellState extends State<Shell> with TickerProviderStateMixin {
     _snack('Venta registrada. Cambio: \$${cambio.toStringAsFixed(2)}');
   }
 
-  Future<void> _imprimirTicket(Venta v) async {
-    final doc = pw.Document();
-    doc.addPage(pw.Page(
+// Helpers locales
+String _money(double x) => '\$${x.toStringAsFixed(2)}';
+pw.TextStyle get _h1 => pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold);
+pw.TextStyle get _h2 => pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold);
+pw.TextStyle get _small => const pw.TextStyle(fontSize: 9);
+String _linea(String ch, [int n = 30]) => List.filled(n, ch).join();
+
+// ===== Nueva impresión de ticket =====
+Future<void> _imprimirTicket(Venta v) async {
+  final doc = pw.Document();
+
+  // Datos fijos del encabezado
+  const nombreNegocio = 'Mini Súper Garza'; // cámbialo si quieres
+  const direccion =
+      'Carr. a la Cola de Caballo SN-C ESTANQUILLO EL ENCINO,\n'
+      'Cieneguilla, 67308 Santiago, N.L.';
+  const rfc = 'XAXX010101000'; // RFC genérico
+
+  // Cantidad total de artículos (unitarios = enteros, granel = decimales)
+  double itemsTotal = 0;
+  for (final l in v.lineas) {
+    itemsTotal += l.producto.esGranel ? l.cantidad : l.cantidad.floorToDouble();
+  }
+  String itemsFmt =
+      (itemsTotal == itemsTotal.roundToDouble()) ? itemsTotal.toInt().toString()
+                                                 : itemsTotal.toStringAsFixed(3);
+
+  doc.addPage(
+    pw.Page(
       pageFormat: pwlib.PdfPageFormat.roll80,
+      margin: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 8),
       build: (pw.Context ctx) {
         return pw.Column(
-          crossAxisAlignment: pw.CrossAxisAlignment.start,
+          crossAxisAlignment: pw.CrossAxisAlignment.stretch,
           children: [
-            pw.Center(child: pw.Text('Mini Súper Garza', style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold))),
-            pw.SizedBox(height: 4),
-            pw.Center(child: pw.Text('Ticket de Venta')),
+            // (Opcional) Logo: si tienes un base64 en `logoBase64`, puedes agregarlo aquí
+            // if (logoBase64 != null && logoBase64!.isNotEmpty) ...[
+            //   pw.Center(pw.Image(pw.MemoryImage(base64Decode(logoBase64!)), width: 48)),
+            //   pw.SizedBox(height: 6),
+            // ],
+
+            // Nombre tienda
+            pw.Center(child: pw.Text(nombreNegocio, style: _h1)),
+            pw.SizedBox(height: 6),
+
+            // Dirección y RFC, centrados
+            pw.Center(child: pw.Text(direccion, style: _small, textAlign: pw.TextAlign.center)),
+            pw.Center(child: pw.Text('RFC: $rfc', style: _small)),
             pw.SizedBox(height: 8),
-            pw.Text('Fecha: ${v.fecha.toString().substring(0,16)}'),
-            if (v.corteId != null) pw.Text('Corte: ${v.corteId}'),
-            pw.Divider(),
 
-            // 👉 ahora con 4 columnas: Producto / Cant. / Subt. / Stock
-            pw.Table(
-              columnWidths: {
-                0: const pw.FlexColumnWidth(5),
-                1: const pw.FlexColumnWidth(2),
-                2: const pw.FlexColumnWidth(2),
-                3: const pw.FlexColumnWidth(2),
-              },
+            // Fecha centrada
+            pw.Center(child: pw.Text(
+              _fechaBonita(v.fecha),
+              style: _small,
+            )),
+            pw.SizedBox(height: 8),
+
+            // Folio alineado derecha
+            pw.Row(
               children: [
-                pw.TableRow(children: [
-                  pw.Text('Producto', style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
-                  pw.Text('Cant.',   style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
-                  pw.Text('Subt.',   style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
-                  pw.Text('Stock',   style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
-                ]),
-                ...v.lineas.map((l) {
-                  // 🔎 stock actual tomado del repo (ya está descontado)
-                  final rest = repo.productos.firstWhere(
-                    (p) => p.id == l.producto.id,
-                    orElse: () => l.producto, // fallback
-                  ).stock;
-
-                  return pw.TableRow(children: [
-                    pw.Text(l.producto.nombre, maxLines: 1),
-                    pw.Text(l.producto.esGranel ? l.cantidad.toStringAsFixed(3) : l.cantidad.toStringAsFixed(0)),
-                    pw.Text('\$${l.subtotal.toStringAsFixed(2)}'),
-                    pw.Text(rest.toString()),
-                  ]);
-                }),
+                pw.Expanded(child: pw.SizedBox()),
+                pw.Text('Folio:  ${v.id}', style: _small),
               ],
             ),
+            pw.SizedBox(height: 6),
 
-            pw.Divider(),
-            pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-              pw.Text('TOTAL', style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold)),
-              pw.Text('\$${v.total.toStringAsFixed(2)}', style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold)),
-            ]),
-            pw.SizedBox(height: 4),
-            pw.Text('Efectivo: \$${v.efectivo.toStringAsFixed(2)}'),
-            pw.Text('Cambio:  \$${v.cambio.toStringAsFixed(2)}'),
+            // Encabezado tabla
+            pw.Text(_linea('=')),
+            pw.Row(
+              children: [
+                pw.SizedBox(width: 36, child: pw.Text('Cant.', style: _h2)),
+                pw.Expanded(child: pw.Text('Descripcion', style: _h2)),
+                pw.SizedBox(width: 64, child: pw.Align(
+                  alignment: pw.Alignment.centerRight,
+                  child: pw.Text('Importe', style: _h2),
+                )),
+              ],
+            ),
+            pw.Text(_linea('=')),
+            pw.SizedBox(height: 2),
+
+            // Líneas de productos (sin PPU, como el ejemplo)
+            ...v.lineas.map((l) {
+              final cant = l.producto.esGranel
+                  ? l.cantidad.toStringAsFixed(3)
+                  : l.cantidad.toStringAsFixed(0);
+
+              // Detectar unidad
+              String unidad = l.producto.presentacion.trim();
+
+              if (unidad.isEmpty) {
+                final nombre = l.producto.nombre.toLowerCase();
+                if (nombre.contains('kg') || nombre.contains('kilo')) unidad = 'kg';
+                else if (nombre.contains(' gr') || nombre.endsWith('gr') || nombre.contains('gramo')) unidad = 'g';
+                else if (nombre.contains(' lt') || nombre.contains('litro')) unidad = 'L';
+                else if (nombre.contains(' ml') || nombre.endsWith('ml')) unidad = 'ml';
+              }
+
+              final nombreFinal = unidad.isNotEmpty
+                  ? '${l.producto.nombre} $unidad'
+                  : l.producto.nombre;
+
+              final importe = _money(l.subtotal);
+              
+              return pw.Padding(
+                padding: const pw.EdgeInsets.symmetric(vertical: 2),
+                child: pw.Row(
+                  crossAxisAlignment: pw.CrossAxisAlignment.start,
+                  children: [
+                    pw.SizedBox(width: 36, child: pw.Text(cant)),
+                    pw.Expanded(child: pw.Text(nombreFinal, maxLines: 2)),
+                    pw.SizedBox(
+                      width: 64,
+                      child: pw.Align(
+                        alignment: pw.Alignment.centerRight,
+                        child: pw.Text(importe),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }),
+
+            pw.SizedBox(height: 6),
+            pw.Text(_linea('=')),
+            pw.SizedBox(height: 6),
+
+            // Número de artículos
+            pw.Row(
+              children: [
+                pw.Expanded(child: pw.Text('No. de Artículos:', style: _small)),
+                pw.Text(itemsFmt, style: _small),
+              ],
+            ),
             pw.SizedBox(height: 8),
-            pw.Center(child: pw.Text('¡Gracias por su compra!')),
+
+            // Totales (alineados derecha)
+            _filaTotal('Total:', _money(v.total)),
+            _filaTotal('Pago Con:', _money(v.efectivo)),
+            _filaTotal('Su Cambio:', _money(v.cambio)),
+
+            pw.SizedBox(height: 12),
+
+            // Mensaje de despedida
+            pw.Center(child: pw.Text('Gracias por su compra', style: _small)),
+            pw.Center(child: pw.Text('vuelva pronto', style: _small)),
           ],
         );
       },
-    ));
-    await Printing.layoutPdf(onLayout: (format) async => doc.save());
-  }
+    ),
+  );
+
+  await Printing.layoutPdf(onLayout: (format) async => doc.save());
+}
+
+// ---- sub-helpers de layout para el ticket ----
+pw.Widget _filaTotal(String etiqueta, String valor) {
+  return pw.Padding(
+    padding: const pw.EdgeInsets.symmetric(vertical: 2),
+    child: pw.Row(
+      children: [
+        pw.Expanded(child: pw.Text(etiqueta, style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold))),
+        pw.Text(valor, style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold)),
+      ],
+    ),
+  );
+}
+
+String _fechaBonita(DateTime f) {
+  // 26/12/2016 07:51 pm
+  final dd = f.day.toString().padLeft(2, '0');
+  final mm = f.month.toString().padLeft(2, '0');
+  final yyyy = f.year.toString();
+  int hh = f.hour;
+  final ampm = hh >= 12 ? 'pm' : 'am';
+  hh = hh % 12; if (hh == 0) hh = 12;
+  final min = f.minute.toString().padLeft(2, '0');
+  return '$dd/$mm/$yyyy  ${hh.toString().padLeft(2, '0')}:$min $ampm';
+}
 
   void _addToCart(Producto p) {
     if (p.stock <= 0) {
