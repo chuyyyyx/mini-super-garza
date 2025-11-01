@@ -1230,200 +1230,312 @@ class ReportesScreen extends StatefulWidget {
   State<ReportesScreen> createState() => _ReportesScreenState();
 }
 
+enum RangoPreset { sieteDias, unMes, tresMeses, personalizado }
+enum TabProductos { menorRotacion, masVendidos, mayorUtilidad }
+
 class _ReportesScreenState extends State<ReportesScreen> {
-  DateTimeRange? rango;
-  @override
-  void initState() {
-    super.initState();
-    final hoy = DateTime.now();
-    rango = DateTimeRange(
-      start: DateTime(hoy.year, hoy.month, hoy.day),
-      end: DateTime(hoy.year, hoy.month, hoy.day, 23, 59, 59),
-    );
+  // Estado UI
+  RangoPreset _preset = RangoPreset.tresMeses;
+  DateTimeRange? _custom;
+  TabProductos _tab = TabProductos.menorRotacion;
+
+  // Config comisiones (editable)
+  final TextEditingController _tasaComCtrl = TextEditingController(text: '0.00'); // % (ej. 1.8)
+  double get _tasaCom => (double.tryParse(_tasaComCtrl.text) ?? 0) / 100.0;
+
+  DateTimeRange _rangoActual(){
+    final now = DateTime.now();
+    switch (_preset) {
+      case RangoPreset.sieteDias:
+        final ini = DateTime(now.year, now.month, now.day).subtract(const Duration(days: 6));
+        final fin = DateTime(now.year, now.month, now.day, 23, 59, 59);
+        return DateTimeRange(start: ini, end: fin);
+      case RangoPreset.unMes:
+        final ini = DateTime(now.year, now.month, 1);
+        final fin = DateTime(now.year, now.month + 1, 0, 23, 59, 59);
+        return DateTimeRange(start: ini, end: fin);
+      case RangoPreset.tresMeses:
+        final ini = DateTime(now.year, now.month - 2, 1);
+        final fin = DateTime(now.year, now.month + 1, 0, 23, 59, 59);
+        return DateTimeRange(start: ini, end: fin);
+      case RangoPreset.personalizado:
+        return _custom ??
+            DateTimeRange(
+              start: DateTime(now.year, now.month, now.day),
+              end: DateTime(now.year, now.month, now.day, 23, 59, 59),
+            );
+    }
   }
 
-  List<Venta> _ventasFiltradas() {
-    if (rango == null) return widget.repo.ventas;
-    final a = rango!.start;
-    final b = rango!.end;
-    return widget.repo.ventas.where((v) => v.fecha.isAfter(a.subtract(const Duration(microseconds: 1))) && v.fecha.isBefore(b.add(const Duration(microseconds: 1)))).toList();
+  // --------- Cálculos ----------
+  List<Venta> _ventasRango() {
+    final r = _rangoActual();
+    return widget.repo.ventas.where((v) =>
+      v.fecha.isAfter(r.start.subtract(const Duration(microseconds: 1))) &&
+      v.fecha.isBefore(r.end.add(const Duration(microseconds: 1)))
+    ).toList();
   }
 
-  Map<String, dynamic> _stats() {
-    final vs = _ventasFiltradas();
-    final total = vs.fold<double>(0, (acc, v) => acc + v.total);
-    final items = vs.fold<int>(0, (acc, v) => acc + v.lineas.fold<int>(0, (a, l) => a + l.cantidad.toInt()));
-    final avg = vs.isEmpty ? 0 : total / vs.length;
-
-    final Map<String, double> porProducto = {};
+  // Totales principales
+  ({double total, double utilidad, double comisiones, int tickets}) _kpis() {
+    final vs = _ventasRango();
+    double total = 0, utilidad = 0;
     for (final v in vs) {
+      total += v.total;
       for (final l in v.lineas) {
-        porProducto[l.producto.nombre] = (porProducto[l.producto.nombre] ?? 0) + l.cantidad;
+        // Precio compra: tomamos el actual del repo (si cambió, es aproximado)
+        final ref = widget.repo.productos.firstWhere(
+          (p) => p.id == l.producto.id,
+          orElse: () => l.producto,
+        );
+        final costoUnit = ref.precioCompra;
+        utilidad += (l.producto.precioVenta - costoUnit) * l.cantidad;
       }
     }
-    final top = porProducto.entries.toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
-    final top5 = top.take(5).toList();
-
-    return {
-      'ventas': vs.length,
-      'total': total,
-      'items': items,
-      'promedio': avg,
-      'top': top5,
-    };
+    final comisiones = total * _tasaCom;
+    return (total: total, utilidad: utilidad, comisiones: comisiones, tickets: vs.length);
   }
 
-  Future<void> _exportarPdf() async {
-    final s = _stats();
-    final doc = pw.Document();
-    final rangoTxt = rango == null ? 'Todo' : '${rango!.start.toString().substring(0, 10)} — ${rango!.end.toString().substring(0, 10)}';
-    doc.addPage(
-      pw.MultiPage(
-        pageFormat: pwlib.PdfPageFormat.a4,
-        build: (ctx) => [
-          pw.Header(level: 0, child: pw.Text('Mini Súper Garza — Reporte de Ventas', style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold))),
-          pw.Text('Rango: $rangoTxt'),
-          pw.SizedBox(height: 8),
-          pw.Table(
-            border: pw.TableBorder.all(width: 0.2),
-            columnWidths: const {0: pw.FlexColumnWidth(3), 1: pw.FlexColumnWidth(2)},
-            children: [
-              pw.TableRow(children: [pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('Ventas')), pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('${s['ventas']}'))]),
-              pw.TableRow(children: [pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('Total')), pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('\$${(s['total'] as double).toStringAsFixed(2)}'))]),
-              pw.TableRow(children: [pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('Artículos vendidos')), pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('${s['items']}'))]),
-              pw.TableRow(children: [pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('Ticket promedio')), pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('\$${(s['promedio'] as double).toStringAsFixed(2)}'))]),
-            ],
+  // Agregados por producto
+  List<_AggProducto> _agregadosPorProducto() {
+    final Map<String, _AggProducto> map = {};
+    for (final v in _ventasRango()) {
+      for (final l in v.lineas) {
+        final id = l.producto.id;
+        final ref = widget.repo.productos.firstWhere(
+          (p) => p.id == id,
+          orElse: () => l.producto,
+        );
+        final costoUnit = ref.precioCompra;
+        final ingreso = l.subtotal;
+        final utilidad = (l.producto.precioVenta - costoUnit) * l.cantidad;
+        final e = map.putIfAbsent(
+          id,
+          () => _AggProducto(
+            id: id,
+            nombre: l.producto.nombre,
+            presentacion: l.producto.presentacion,
           ),
-          pw.SizedBox(height: 12),
-          pw.Text('Top 5 productos por cantidad', style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
-          pw.SizedBox(height: 6),
-          pw.Table(
-            border: pw.TableBorder.all(width: 0.2),
-            columnWidths: const {0: pw.FlexColumnWidth(6), 1: pw.FlexColumnWidth(2)},
-            children: [
-              pw.TableRow(children: [pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('Producto', style: pw.TextStyle(fontWeight: pw.FontWeight.bold))), pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('Cantidad', style: pw.TextStyle(fontWeight: pw.FontWeight.bold)))]),
-              ...List.generate((s['top'] as List).length, (i) {
-                final e = (s['top'] as List<MapEntry<String, double>>)[i];
-                return pw.TableRow(children: [
-                  pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text(e.key)),
-                  pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text(e.value.toStringAsFixed(0))),
-                ]);
-              }),
-            ],
-          ),
-        ],
-      ),
-    );
-    await Printing.layoutPdf(onLayout: (format) async => doc.save());
+        );
+        e.unidades += l.cantidad;
+        e.venta += ingreso;
+        e.utilidad += utilidad;
+      }
+    }
+    return map.values.toList();
+  }
+
+  // Orden según pestaña
+  List<_AggProducto> _ordenados() {
+    final list = _agregadosPorProducto();
+    switch (_tab) {
+      case TabProductos.menorRotacion:
+        list.sort((a, b) => a.unidades.compareTo(b.unidades)); // asc
+        break;
+      case TabProductos.masVendidos:
+        list.sort((a, b) => b.unidades.compareTo(a.unidades)); // desc
+        break;
+      case TabProductos.mayorUtilidad:
+        list.sort((a, b) => b.utilidad.compareTo(a.utilidad)); // desc
+        break;
+    }
+    return list;
   }
 
   @override
   Widget build(BuildContext context) {
-    final s = _stats();
-    final hoy = DateTime.now();
-    final rangoTxt = rango == null
-        ? 'Hoy'
-        : '${rango!.start.toString().substring(0, 10)} — ${rango!.end.toString().substring(0, 10)}';
+    final r = _rangoActual();
+    final k = _kpis();
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Reportes'),
+        title: const Text('Reporte de ventas'),
         actions: [
           IconButton(
-            tooltip: 'Exportar a PDF',
-            onPressed: _exportarPdf,
-            icon: const Icon(Icons.picture_as_pdf_outlined),
+          tooltip: 'Exportar PDF',
+          icon: const Icon(Icons.picture_as_pdf_outlined),
+          onPressed: _exportarPdf, // ← usa el método nuevo
+        ),
+          Padding(
+            padding: const EdgeInsets.only(right: 16),
+            child: Center(
+              child: Text(
+                '${r.end.toString().substring(0, 10)}  ${TimeOfDay.fromDateTime(DateTime.now()).format(context)}',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+            ),
           ),
-          const SizedBox(width: 8),
         ],
       ),
       body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        padding: const EdgeInsets.all(16),
+        child: ListView(
           children: [
-            Wrap(
-              spacing: 8,
-              crossAxisAlignment: WrapCrossAlignment.center,
+            // Franja: nota + filtros "Ver por"
+            Row(
               children: [
-                FilledButton.tonalIcon(
-                  onPressed: () async {
-                    final nueva = await showDateRangePicker(
-                      context: context,
-                      firstDate: DateTime(hoy.year - 2),
-                      lastDate: DateTime(hoy.year + 1),
-                      initialDateRange: rango,
-                    );
-                    if (nueva != null) setState(() => rango = nueva);
-                  },
-                  icon: const Icon(Icons.date_range),
-                  label: Text(rangoTxt),
+                Expanded(
+                  child: Text(
+                    'Debes de mantener actualizado tu inventario para obtener un mejor resultado',
+                    style: TextStyle(color: Colors.black.withOpacity(0.6)),
+                  ),
                 ),
-                OutlinedButton(
-                  onPressed: () {
-                    setState(() {
-                      rango = DateTimeRange(
-                        start: DateTime(hoy.year, hoy.month, hoy.day),
-                        end: DateTime(hoy.year, hoy.month, hoy.day, 23, 59, 59),
+                const SizedBox(width: 12),
+                const Text('Ver por'),
+                const SizedBox(width: 8),
+                DropdownButton<RangoPreset>(
+                  value: _preset,
+                  onChanged: (v) async {
+                    if (v == null) return;
+                    if (v == RangoPreset.personalizado) {
+                      final sel = await showDateRangePicker(
+                        context: context,
+                        firstDate: DateTime(DateTime.now().year - 2),
+                        lastDate: DateTime(DateTime.now().year + 1),
+                        initialDateRange: _rangoActual(),
                       );
-                    });
+                      if (sel != null) {
+                        setState(() { _preset = v; _custom = sel; });
+                      }
+                    } else {
+                      setState(() { _preset = v; });
+                    }
                   },
-                  child: const Text('Hoy'),
+                  items: const [
+                    DropdownMenuItem(value: RangoPreset.sieteDias, child: Text('7 días')),
+                    DropdownMenuItem(value: RangoPreset.unMes, child: Text('1 mes')),
+                    DropdownMenuItem(value: RangoPreset.tresMeses, child: Text('3 meses')),
+                    DropdownMenuItem(value: RangoPreset.personalizado, child: Text('Personalizado')),
+                  ],
                 ),
-                OutlinedButton(
-                  onPressed: () {
-                    setState(() {
-                      final ini = DateTime(hoy.year, hoy.month, hoy.day).subtract(const Duration(days: 6));
-                      final fin = DateTime(hoy.year, hoy.month, hoy.day, 23, 59, 59);
-                      rango = DateTimeRange(start: ini, end: fin);
-                    });
-                  },
-                  child: const Text('Últimos 7 días'),
-                ),
-                OutlinedButton(
-                  onPressed: () => setState(() => rango = null),
-                  child: const Text('Todo'),
+                const SizedBox(width: 12),
+                // Tasa de comisión (%)
+                SizedBox(
+                  width: 120,
+                  child: TextField(
+                    controller: _tasaComCtrl,
+                    onSubmitted: (_) => setState(() {}),
+                    decoration: const InputDecoration(
+                      labelText: 'Comisión %',
+                      isDense: true,
+                    ),
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  ),
                 ),
               ],
             ),
             const SizedBox(height: 16),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Wrap(
-                  spacing: 24,
-                  runSpacing: 12,
-                  children: [
-                    _kpi('Ventas', '${s['ventas']}'),
-                    _kpi('Total', '\$${(s['total'] as double).toStringAsFixed(2)}'),
-                    _kpi('Artículos vendidos', '${s['items']}'),
-                    _kpi('Ticket promedio', '\$${(s['promedio'] as double).toStringAsFixed(2)}'),
-                  ],
-                ),
-              ),
+
+            // KPIs (3 tarjetas)
+            Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              children: [
+                _KpiCard(title: 'VENTA TOTAL', value: _fmtMoney(k.total), icon: Icons.shopping_bag),
+                _KpiCard(title: 'GANANCIAS / UTILIDAD EN POS', value: _fmtMoney(k.utilidad), icon: Icons.ssid_chart),
+                _KpiCard(title: 'COMISIONES', value: _fmtMoney(k.comisiones), icon: Icons.receipt_long),
+              ],
             ),
-            const SizedBox(height: 16),
-            Expanded(
-              child: ListView(
-                children: [
-                  const Text('Top productos por cantidad', style: TextStyle(fontWeight: FontWeight.w700)),
-                  const SizedBox(height: 8),
-                  DataTable(
-                    columns: const [
-                      DataColumn(label: Text('Producto')),
-                      DataColumn(label: Text('Cantidad'), numeric: true),
-                    ],
-                    rows: [
-                      for (final e in (s['top'] as List<MapEntry<String, double>>))
-                        DataRow(cells: [
-                          DataCell(Text(e.key)),
-                          DataCell(Text(e.value.toStringAsFixed(0))),
-                        ]),
-                    ],
+
+            const SizedBox(height: 20),
+
+            // Gráfica de barras
+            const Text('Cantidad de ventas', style: TextStyle(fontWeight: FontWeight.w700)),
+            const SizedBox(height: 8),
+            _BarChart(
+              series: const ['Transacciones', 'POS', 'Adquiriente'],
+              // Para simplificar: Transacciones = #tickets (lo llevamos a dinero como tickets*promedio para escalar) 
+              // pero aquí lo mostramos como conteo sobre el eje derecho en etiqueta.
+              values: [k.tickets.toDouble(), k.total, k.comisiones],
+              valueLabels: [
+                '${k.tickets}',
+                _fmtMoney(k.total),
+                _fmtMoney(k.comisiones),
+              ],
+            ),
+
+            const SizedBox(height: 20),
+
+            // Panel "Mis productos" (tabs + pastel + tabla)
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Izquierda: tabs + pie
+                Expanded(
+                  child: Card(
+                    elevation: 0.5,
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('Mis productos', style: TextStyle(fontWeight: FontWeight.w700)),
+                          const SizedBox(height: 8),
+                          SegmentedButton<TabProductos>(
+                            segments: const [
+                              ButtonSegment(value: TabProductos.menorRotacion, label: Text('MENOR ROTACIÓN')),
+                              ButtonSegment(value: TabProductos.masVendidos, label: Text('MÁS VENDIDOS')),
+                              ButtonSegment(value: TabProductos.mayorUtilidad, label: Text('MAYOR UTILIDAD')),
+                            ],
+                            selected: {_tab},
+                            onSelectionChanged: (s) => setState(() => _tab = s.first),
+                          ),
+                          const SizedBox(height: 12),
+                          SizedBox(
+                            height: 220,
+                            child: _PieChart(
+                              // Para el pastel usamos top 6 del criterio actual
+                              entries: _ordenados().take(6).map((e) => (e.nombre, e.unidades)).toList(),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
-                ],
-              ),
+                ),
+
+                const SizedBox(width: 12),
+
+                // Derecha: tabla de productos (ordenada según tab)
+                Expanded(
+                  child: Card(
+                    elevation: 0.5,
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: const [
+                              Expanded(child: Text('Lugar')),
+                              Expanded(flex: 4, child: Text('Nombre')),
+                              Expanded(child: Text('Unidades')),
+                              Expanded(child: Text('Venta')),
+                            ],
+                          ),
+                          const Divider(),
+                          ..._ordenados().take(8).indexed.map((e) {
+                            final idx = e.$1 + 1;
+                            final p = e.$2;
+                            return Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 6),
+                              child: Row(
+                                children: [
+                                  const SizedBox(width: 4),
+                                  Expanded(child: Text('$idx')),
+                                  Expanded(flex: 4, child: Text('${p.nombre}${p.presentacion.isNotEmpty ? ' ${p.presentacion}' : ''}', overflow: TextOverflow.ellipsis)),
+                                  Expanded(child: Text(_fmtQty(p.unidades), textAlign: TextAlign.right)),
+                                  Expanded(child: Text(_fmtMoney(p.venta), textAlign: TextAlign.right)),
+                                ],
+                              ),
+                            );
+                          }),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ],
         ),
@@ -1431,20 +1543,232 @@ class _ReportesScreenState extends State<ReportesScreen> {
     );
   }
 
-  Widget _kpi(String titulo, String valor) {
+Future<void> _exportarPdf() async {
+  final r = _rangoActual();
+  final k = _kpis();
+  final top = _ordenados().take(10).toList(); // según la pestaña activa
+
+  String _d(DateTime d) => d.toString().substring(0, 10);
+  String _m(double v)   => '\$${v.toStringAsFixed(2)}';
+  String _q(double v)   => (v == v.roundToDouble()) ? v.toInt().toString() : v.toStringAsFixed(3);
+
+  final doc = pw.Document();
+
+  doc.addPage(
+    pw.MultiPage(
+      pageFormat: pwlib.PdfPageFormat.a4,
+      build: (ctx) => [
+        pw.Header(
+          level: 0,
+          child: pw.Text(
+            'Mini Súper Garza — Reporte de Ventas',
+            style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold),
+          ),
+        ),
+        pw.Text('Rango: ${_d(r.start)} — ${_d(r.end)}'),
+        pw.SizedBox(height: 8),
+        pw.Table(
+          border: pw.TableBorder.all(width: 0.2),
+          columnWidths: const {0: pw.FlexColumnWidth(3), 1: pw.FlexColumnWidth(2)},
+          children: [
+            pw.TableRow(children: [
+              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('Venta total')),
+              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text(_m(k.total))),
+            ]),
+            pw.TableRow(children: [
+              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('Utilidad estimada')),
+              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text(_m(k.utilidad))),
+            ]),
+            pw.TableRow(children: [
+              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('Comisiones')),
+              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text(_m(k.comisiones))),
+            ]),
+            pw.TableRow(children: [
+              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('Tickets')),
+              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('${k.tickets}')),
+            ]),
+          ],
+        ),
+        pw.SizedBox(height: 12),
+        pw.Text('Top productos', style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
+        pw.SizedBox(height: 6),
+        pw.Table(
+          border: pw.TableBorder.all(width: 0.2),
+          columnWidths: const {
+            0: pw.FlexColumnWidth(1),
+            1: pw.FlexColumnWidth(6),
+            2: pw.FlexColumnWidth(2),
+            3: pw.FlexColumnWidth(2),
+            4: pw.FlexColumnWidth(2),
+          },
+          children: [
+            pw.TableRow(children: [
+              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('#', style: pw.TextStyle(fontWeight: pw.FontWeight.bold))),
+              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('Producto', style: pw.TextStyle(fontWeight: pw.FontWeight.bold))),
+              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('Unidades', style: pw.TextStyle(fontWeight: pw.FontWeight.bold))),
+              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('Venta', style: pw.TextStyle(fontWeight: pw.FontWeight.bold))),
+              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('Utilidad', style: pw.TextStyle(fontWeight: pw.FontWeight.bold))),
+            ]),
+            ...top.indexed.map((e) {
+              final i = e.$1 + 1;
+              final p = e.$2;
+              final nombre = p.presentacion.isNotEmpty ? '${p.nombre} ${p.presentacion}' : p.nombre;
+              return pw.TableRow(children: [
+                pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('$i')),
+                pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text(nombre)),
+                pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text(_q(p.unidades))),
+                pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text(_m(p.venta))),
+                pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text(_m(p.utilidad))),
+              ]);
+            }),
+          ],
+        ),
+      ],
+    ),
+  );
+
+  await Printing.layoutPdf(onLayout: (format) async => doc.save());
+}
+
+}
+
+// ---- Modelillos y helpers locales ----
+class _AggProducto {
+  final String id;
+  final String nombre;
+  final String presentacion;
+  double unidades = 0;
+  double venta = 0;
+  double utilidad = 0;
+  _AggProducto({required this.id, required this.nombre, required this.presentacion});
+}
+
+String _fmtMoney(double v) => '\$${v.toStringAsFixed(2)}';
+String _fmtQty(double q) => (q == q.roundToDouble()) ? q.toInt().toString() : q.toStringAsFixed(3);
+
+// ---- Widgets UI: KPI card, Bar chart, Pie chart (sin dependencias) ----
+class _KpiCard extends StatelessWidget {
+  final String title;
+  final String value;
+  final IconData icon;
+  const _KpiCard({required this.title, required this.value, required this.icon});
+  @override
+  Widget build(BuildContext context) {
     return SizedBox(
-      width: 220,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(titulo, style: const TextStyle(color: Colors.black54)),
-          const SizedBox(height: 4),
-          Text(valor, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-        ],
+      width: 260,
+      child: Card(
+        elevation: 0.5,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            children: [
+              Icon(icon, size: 28),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
+                    const SizedBox(height: 6),
+                    Text(value, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
 }
+
+class _BarChart extends StatelessWidget {
+  final List<String> series;
+  final List<double> values;
+  final List<String> valueLabels;
+  const _BarChart({required this.series, required this.values, required this.valueLabels});
+  @override
+  Widget build(BuildContext context) {
+    final max = (values.isEmpty ? 1.0 : values.reduce((a, b) => a > b ? a : b)) * 1.2;
+    return Card(
+      elevation: 0.5,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: SizedBox(
+          height: 220,
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: List.generate(values.length, (i) {
+              final h = (values[i] / (max == 0 ? 1 : max)) * 160.0;
+              return Expanded(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    Text(valueLabels[i], style: const TextStyle(fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 4),
+                    Container(height: h, width: 28, color: Theme.of(context).colorScheme.primary.withOpacity(0.85)),
+                    const SizedBox(height: 8),
+                    Text(series[i]),
+                  ],
+                ),
+              );
+            }),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PieChart extends StatelessWidget {
+  // entries: (label, value)
+  final List<(String, double)> entries;
+  const _PieChart({required this.entries});
+  @override
+  Widget build(BuildContext context) {
+    final total = entries.fold<double>(0, (a, e) => a + (e.$2 <= 0 ? 0 : e.$2));
+    return CustomPaint(
+      painter: _PiePainter(entries, total, Theme.of(context).colorScheme.primary),
+      child: Center(
+        child: Text(
+          total <= 0 ? 'Sin datos' : '',
+          style: const TextStyle(fontWeight: FontWeight.w600),
+        ),
+      ),
+    );
+  }
+}
+
+class _PiePainter extends CustomPainter {
+  final List<(String, double)> entries;
+  final double total;
+  final Color base;
+  _PiePainter(this.entries, this.total, this.base);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Rect.fromCircle(center: size.center(Offset.zero), radius: size.shortestSide * 0.42);
+    final paint = Paint()..style = PaintingStyle.fill;
+    double start = -3.14159 / 2; // arriba
+
+    // Pastel
+    for (var i = 0; i < entries.length; i++) {
+      final v = entries[i].$2 <= 0 ? 0.0 : entries[i].$2;
+      final sweep = total <= 0 ? 0.0 : (v / total) * 6.28318;
+      paint.color = HSVColor.fromAHSV(1, (i * 45) % 360.0, 0.6, 0.9).toColor();
+      canvas.drawArc(rect, start, sweep, true, paint);
+      start += sweep;
+    }
+    // Donut (agujero)
+    final hole = Paint()..color = Colors.white;
+    canvas.drawCircle(size.center(Offset.zero), size.shortestSide * 0.22, hole);
+  }
+
+  @override
+  bool shouldRepaint(covariant _PiePainter oldDelegate) =>
+      oldDelegate.entries != entries || oldDelegate.total != total;
+}
+
 
 class TotalesHoyScreen extends StatelessWidget {
   final Repo repo; const TotalesHoyScreen({super.key, required this.repo});
