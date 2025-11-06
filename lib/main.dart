@@ -2639,7 +2639,7 @@ class _CortesScreenState extends State<CortesScreen> {
                     OutlinedButton.icon(
                       icon: const Icon(Icons.picture_as_pdf),
                       label: const Text('PDF'),
-                      onPressed: () => _exportarPdfCorte(context, repo, c.id),
+                      onPressed: () => _imprimirTicketCorte(context, repo, c.id),
                     ),
                   ],
                 ),
@@ -2768,6 +2768,124 @@ class _CortesScreenState extends State<CortesScreen> {
     ));
     await Printing.layoutPdf(onLayout: (format) async => doc.save());
   }
+
+  // ===== Ticket de Corte (rollo 80mm) =====
+Future<void> _imprimirTicketCorte(
+  BuildContext context,
+  Repo repo,
+  String corteId,
+) async {
+  final doc = pw.Document();
+  final corte = repo.cortes.firstWhere((x) => x.id == corteId);
+
+  // Datos del corte
+  final ventas = repo.ventasDeCorte(corteId);
+  final tickets = ventas.length;
+  final items = ventas.fold<int>(
+    0,
+    (a, v) => a + v.lineas.fold<int>(0, (x, l) => x + l.cantidad.toInt()),
+  );
+  final total = ventas.fold<double>(0.0, (a, v) => a + v.total);
+
+  final efectivo = repo.efectivoDeCorte(corteId);
+  final cambio   = repo.cambioDeCorte(corteId);
+  final saldoIni = corte.saldoInicial;
+  final saldoFin = repo.saldoActualDeCorte(corteId);
+
+  // Top productos
+  final Map<String, double> porProducto = {};
+  for (final v in ventas) {
+    for (final l in v.lineas) {
+      porProducto[l.producto.nombre] =
+          (porProducto[l.producto.nombre] ?? 0) + l.cantidad;
+    }
+  }
+  final top = porProducto.entries.toList()
+    ..sort((a, b) => b.value.compareTo(a.value));
+  final top5 = top.take(5).toList();
+
+  doc.addPage(
+    pw.Page(
+      pageFormat: pwlib.PdfPageFormat.roll80, // 👈 formato ticket
+      build: (pw.Context ctx) {
+        return pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+          children: [
+            _center('Mini Súper Garza', bold: true),
+            _center('Santiago, N.L.'),
+            _center('RFC: XAXX010101000'),
+            _sp(2),
+            _center('CORTE DE CAJA', bold: true),
+            _center('ID: ${corte.id}'),
+            _center(_fmtFecha(DateTime.now())),
+            _sp(2),
+            _linea(),
+            _kv('Inicio', _fmtFecha(corte.inicio)),
+            _kv('Cierre', corte.fin == null ? '(abierto)' : _fmtFecha(corte.fin!)),
+            _linea(),
+            _kv('Tickets', '$tickets'),
+            _kv('Artículos', '$items'),
+            _kv('Total vendido', _money(total)),
+            _sp(1),
+            _linea(),
+            _kv('Saldo inicial', _money(saldoIni)),
+            _kv('Efectivo ingresado', _money(efectivo)),
+            _kv('Cambio entregado', _money(cambio)),
+            _kv('Saldo actual', _money(saldoFin)),
+            _linea(),
+            if (top5.isNotEmpty) ...[
+              _center('Top productos', bold: true),
+              _sp(1),
+              ...top5.map((e) => pw.Row(
+                    mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                    children: [
+                      pw.Expanded(
+                        child: pw.Text(
+                          e.key.length > 20 ? '${e.key.substring(0, 20)}…' : e.key,
+                        ),
+                      ),
+                      pw.Text(e.value.toStringAsFixed(0)),
+                    ],
+                  )),
+              _linea(),
+            ],
+            _center('¡Gracias por su trabajo!'),
+            _center('Mini Súper Garza'),
+          ],
+        );
+      },
+    ),
+  );
+
+  await Printing.layoutPdf(onLayout: (_) async => doc.save());
+}
+
+// ===== Helpers para el ticket =====
+pw.Widget _kv(String k, String v) => pw.Row(
+  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+  children: [pw.Text(k), pw.Text(v, style: pw.TextStyle(fontWeight: pw.FontWeight.bold))],
+);
+
+pw.Widget _center(String t, {bool bold = false}) =>
+    pw.Align(alignment: pw.Alignment.center, child: pw.Text(
+      t,
+      style: pw.TextStyle(fontWeight: bold ? pw.FontWeight.bold : pw.FontWeight.normal),
+    ));
+
+pw.Widget _sp(double h) => pw.SizedBox(height: h);
+
+pw.Widget _linea() => pw.Padding(
+  padding: const pw.EdgeInsets.symmetric(vertical: 2),
+  child: pw.Text('-' * 32),
+);
+
+String _money(num v) => '\$${v.toStringAsFixed(2)}';
+
+String _fmtFecha(DateTime f) =>
+    '${f.year}-${_2(f.month)}-${_2(f.day)}  ${_2(f.hour)}:${_2(f.minute)}';
+
+String _2(int n) => n.toString().padLeft(2, '0');
+
 
   Widget _kpi(String t, String v) => SizedBox(
     width: 220,
