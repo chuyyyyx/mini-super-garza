@@ -156,28 +156,40 @@ class Venta {
       );
 }
 
-// Corte de caja
 class Corte {
-  final String id; // ej: "c_2025-10-27_1"
+  final String id;
   final DateTime inicio;
   DateTime? fin;
   String? notas;
-  Corte({required this.id, required this.inicio, this.fin, this.notas});
+
+  // 👇 nuevo
+  final double saldoInicial;
+
+  Corte({
+    required this.id,
+    required this.inicio,
+    this.fin,
+    this.notas,
+    this.saldoInicial = 0.0, // default para compatibilidad con datos viejos
+  });
+
   bool get abierto => fin == null;
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'inicio': inicio.toIso8601String(),
-        'fin': fin?.toIso8601String(),
-        'notas': notas,
-      };
+    'id': id,
+    'inicio': inicio.toIso8601String(),
+    'fin': fin?.toIso8601String(),
+    'notas': notas,
+    'saldoInicial': saldoInicial, // 👈 nuevo
+  };
 
   static Corte fromJson(Map<String, dynamic> m) => Corte(
-        id: m['id'] as String,
-        inicio: DateTime.parse(m['inicio'] as String),
-        fin: m['fin'] == null ? null : DateTime.parse(m['fin'] as String),
-        notas: m['notas'] as String?,
-      );
+    id: m['id'] as String,
+    inicio: DateTime.parse(m['inicio'] as String),
+    fin: m['fin'] == null ? null : DateTime.parse(m['fin'] as String),
+    notas: m['notas'] as String?,
+    saldoInicial: (m['saldoInicial'] ?? 0).toDouble(), // 👈 nuevo
+  );
 }
 
 class MovimientoInv {
@@ -426,21 +438,60 @@ class Repo extends ChangeNotifier {
         .fold(0.0, (a, v) => a + v.total);
   }
 
-  // Cortes API
-  Future<Corte> abrirCorte({String? notas}) async {
-    if (corteAbierto != null) return corteAbierto!; // ya hay uno
+  Future<Corte> abrirCorte({String? notas, double saldoInicial = 0.0}) async {
+    if (corteAbierto != null) return corteAbierto!;
     final hoy = DateTime.now();
     final serialDelDia = 1 + _cortes.where((c) =>
       c.inicio.year == hoy.year && c.inicio.month == hoy.month && c.inicio.day == hoy.day
     ).length;
+
     final id = 'c_${hoy.toIso8601String().substring(0,10)}_$serialDelDia';
-    final c = Corte(id: id, inicio: hoy, notas: notas);
+
+    final c = Corte(
+      id: id,
+      inicio: hoy,
+      notas: notas,
+      saldoInicial: saldoInicial, // 👈 usar el valor
+    );
+
     _cortes.insert(0, c);
     _corteAbiertoId = id;
     await _saveCortes();
     notifyListeners();
     return c;
   }
+
+    // Borra solo los cortes (no toca ventas, productos ni movs)
+  Future<void> borrarSoloCortes() async {
+    // memoria
+    _cortes.clear();
+    _corteAbiertoId = null;
+
+    // persistencia
+    await _saveCortes(); // guarda lista vacía y limpia/actualiza corte abierto
+
+    // por si acaso: también limpia las claves directas (no estrictamente necesario si _saveCortes ya las maneja)
+    final sp = await SharedPreferences.getInstance();
+    await sp.remove(_kKeyCortes);
+    await sp.remove(_kKeyCorteAbierto);
+
+    notifyListeners();
+  }
+
+
+    // 👇 Helpers de caja para UI/reportes
+double efectivoDeCorte(String corteId) =>
+    ventasDeCorte(corteId).fold(0.0, (a, v) => a + v.efectivo);
+
+double cambioDeCorte(String corteId) =>
+    ventasDeCorte(corteId).fold(0.0, (a, v) => a + v.cambio);
+
+double saldoActualDeCorte(String corteId) {
+  final c = _cortes.firstWhere((x) => x.id == corteId);
+  final efectivo = efectivoDeCorte(corteId);
+  final cambio = cambioDeCorte(corteId);
+  return c.saldoInicial + efectivo - cambio;
+}
 
   Future<void> cerrarCorte({String? notas}) async {
     final c = corteAbierto;
@@ -1299,7 +1350,52 @@ class AdminHome extends StatelessWidget {
                 subtitle: const Text('Abrir, cerrar y reportar ventas por corte'),
                 trailing: Wrap(spacing: 8, children: [
                   if (repo.corteAbierto == null)
-                    FilledButton.tonal(onPressed: () async { await repo.abrirCorte(); }, child: const Text('Abrir corte')),
+                    FilledButton.tonal(
+                      onPressed: () async {
+                        final ctrl = TextEditingController(text: '0.00');
+                        final ok = await showDialog<bool>(
+                          context: context,
+                          builder: (dCtx) => AlertDialog(
+                            title: const Text('Apertura de caja'),
+                            content: SizedBox(
+                              width: 360,
+                              child: TextField(
+                                controller: ctrl,
+                                autofocus: true,
+                                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                decoration: const InputDecoration(
+                                  labelText: 'Saldo inicial (efectivo en caja)',
+                                  prefixText: '\$',
+                                ),
+                              ),
+                            ),
+                            actions: [
+                              TextButton(onPressed: () => Navigator.pop(dCtx, false), child: const Text('Cancelar')),
+                              FilledButton(onPressed: () => Navigator.pop(dCtx, true), child: const Text('Abrir')),
+                            ],
+                          ),
+                        );
+
+                        if (ok == true) {
+                          final val = double.tryParse(ctrl.text.replaceAll(',', '')) ?? 0.0;
+                          await repo.abrirCorte(saldoInicial: val);   // 👈 pasa el saldo
+
+
+
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('Corte abierto con saldo inicial: \$${val.toStringAsFixed(2)}')),
+
+
+
+
+                          
+                            );
+                          }
+                        }
+                      },
+                      child: const Text('Abrir corte'),
+                    ),
                   if (repo.corteAbierto != null)
                     FilledButton.tonal(onPressed: () {
                       Navigator.of(context).push(MaterialPageRoute(builder: (_) => CortesScreen(repo: repo)));
@@ -2387,13 +2483,22 @@ class _CobroDialogState extends State<_CobroDialog> {
 }
 
 // ===================== CORTES SCREEN =====================
-class CortesScreen extends StatelessWidget {
+class CortesScreen extends StatefulWidget {
   final Repo repo;
   const CortesScreen({super.key, required this.repo});
 
   @override
+  State<CortesScreen> createState() => _CortesScreenState();
+}
+
+class _CortesScreenState extends State<CortesScreen> {
+  @override
   Widget build(BuildContext context) {
-    final abierto = repo.corteAbierto;
+    final repo = widget.repo; // usa widget.repo
+    final Corte? abierto = repo.cortes.any((c) => c.abierto)
+        ? repo.cortes.firstWhere((c) => c.abierto)
+        : null;
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Cortes'),
@@ -2405,11 +2510,11 @@ class CortesScreen extends StatelessWidget {
               onPressed: () async {
                 await _exportarPdfCorte(context, repo, abierto.id);
                 await repo.cerrarCorte();
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Corte cerrado y PDF generado')),
-                  );
-                }
+                if (!mounted) return;
+                setState(() {}); // refresca al cerrar
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Corte cerrado y PDF generado')),
+                );
               },
             ),
         ],
@@ -2417,49 +2522,145 @@ class CortesScreen extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          if (abierto != null) _panelCorteActual(context, repo, abierto) else
+          if (abierto != null)
+            _panelCorteActual(context, repo, abierto)
+          else
             Card(
               child: ListTile(
                 leading: const Icon(Icons.lock_open),
                 title: const Text('No hay corte abierto'),
                 subtitle: const Text('Abre un corte para comenzar a registrar ventas por turno'),
-                trailing: FilledButton(
-                  onPressed: () async { await repo.abrirCorte(); },
-                  child: const Text('Abrir corte'),
+                trailing: Wrap(
+                  spacing: 8,
+                  children: [
+                    // Botón: limpiar cortes
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.delete_outline),
+                      label: const Text('Limpiar cortes'),
+                      onPressed: () async {
+                        final hayAbierto = repo.cortes.any((c) => c.abierto);
+                        final ok = await showDialog<bool>(
+                          context: context,
+                          builder: (dCtx) => AlertDialog(
+                            title: const Text('¿Eliminar todos los cortes?'),
+                            content: Text(
+                              hayAbierto
+                                  ? 'Hay un corte abierto. Esto lo cerrará y borrará todo el historial de cortes. ¿Deseas continuar?'
+                                  : 'Se borrará todo el historial de cortes. ¿Deseas continuar?',
+                            ),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.pop(dCtx, false),
+                                child: const Text('Cancelar'),
+                              ),
+                              FilledButton(
+                                onPressed: () => Navigator.pop(dCtx, true),
+                                child: const Text('Sí, borrar'),
+                              ),
+                            ],
+                          ),
+                        );
+
+                        if (ok == true) {
+                          await widget.repo.borrarSoloCortes();
+                          if (!mounted) return;
+                          setState(() {}); // refresca la UI inmediatamente
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Cortes eliminados correctamente')),
+                          );
+                        }
+                      },
+                    ),
+                    // Botón: abrir corte (con saldo inicial)
+                    FilledButton(
+                      onPressed: () async {
+                        final ctrl = TextEditingController(text: '0.00');
+                        final ok = await showDialog<bool>(
+                          context: context,
+                          builder: (dCtx) => AlertDialog(
+                            title: const Text('Apertura de caja'),
+                            content: SizedBox(
+                              width: 360,
+                              child: TextField(
+                                controller: ctrl,
+                                autofocus: true,
+                                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                decoration: const InputDecoration(
+                                  labelText: 'Saldo inicial (efectivo en caja)',
+                                  prefixText: '\$',
+                                ),
+                              ),
+                            ),
+                            actions: [
+                              TextButton(onPressed: () => Navigator.pop(dCtx, false), child: const Text('Cancelar')),
+                              FilledButton(onPressed: () => Navigator.pop(dCtx, true), child: const Text('Abrir')),
+                            ],
+                          ),
+                        );
+
+                        if (ok == true) {
+                          final val = double.tryParse(ctrl.text.replaceAll(',', '').trim()) ?? 0.0;
+                          await widget.repo.abrirCorte(saldoInicial: val);
+                          if (!mounted) return;
+                          setState(() {}); // refresca al abrir
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('Corte abierto con saldo inicial: \$${val.toStringAsFixed(2)}')),
+                          );
+                        }
+                      },
+                      child: const Text('Abrir corte'),
+                    ),
+                  ],
                 ),
               ),
             ),
           const SizedBox(height: 16),
           const Text('Historial de cortes', style: TextStyle(fontWeight: FontWeight.w700)),
           const SizedBox(height: 8),
-          ...repo.cortes.map((c) => Card(
-            child: ListTile(
-              leading: Icon(c.abierto ? Icons.play_circle : Icons.stop_circle, color: c.abierto ? Colors.green : null),
-              title: Text(c.id),
-              subtitle: Text('${c.inicio.toString().substring(0,16)}  →  ${c.fin?.toString().substring(0,16) ?? "(abierto)"}'),
-              trailing: Wrap(spacing: 8, children: [
-                OutlinedButton.icon(
-                  icon: const Icon(Icons.visibility),
-                  label: const Text('Ver ventas'),
-                  onPressed: () => _verVentasDeCorte(context, repo, c.id),
+          ...repo.cortes.map(
+            (c) => Card(
+              child: ListTile(
+                leading: Icon(
+                  c.abierto ? Icons.play_circle : Icons.stop_circle,
+                  color: c.abierto ? Colors.green : null,
                 ),
-                OutlinedButton.icon(
-                  icon: const Icon(Icons.picture_as_pdf),
-                  label: const Text('PDF'),
-                  onPressed: () => _exportarPdfCorte(context, repo, c.id),
+                title: Text(c.id),
+                subtitle: Text(
+                  '${c.inicio.toString().substring(0, 16)}  →  ${c.fin?.toString().substring(0, 16) ?? "(abierto)"}',
                 ),
-              ]),
+                trailing: Wrap(
+                  spacing: 8,
+                  children: [
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.visibility),
+                      label: const Text('Ver ventas'),
+                      onPressed: () => _verVentasDeCorte(context, repo, c.id),
+                    ),
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.picture_as_pdf),
+                      label: const Text('PDF'),
+                      onPressed: () => _exportarPdfCorte(context, repo, c.id),
+                    ),
+                  ],
+                ),
+              ),
             ),
-          )),
+          ),
         ],
       ),
     );
   }
+}
 
   Widget _panelCorteActual(BuildContext context, Repo repo, Corte c) {
     final vs = repo.ventasDeCorte(c.id);
     final total = vs.fold<double>(0, (a, v) => a + v.total);
     final items = vs.fold<int>(0, (a, v) => a + v.lineas.fold(0, (x, l) => x + l.cantidad.toInt()));
+
+    final efectivo = repo.efectivoDeCorte(c.id);
+    final cambio = repo.cambioDeCorte(c.id);
+    final saldoActual = repo.saldoActualDeCorte(c.id);
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -2473,7 +2674,12 @@ class CortesScreen extends StatelessWidget {
               _kpi('Inicio', c.inicio.toString().substring(0,16)),
               _kpi('Ventas', '${vs.length}'),
               _kpi('Artículos', '$items'),
-              _kpi('Total', '\$${total.toStringAsFixed(2)}'),
+              _kpi('Total ventas', '\$${total.toStringAsFixed(2)}'),
+              // 👇 KPIs de caja
+              _kpi('Saldo inicial', '\$${c.saldoInicial.toStringAsFixed(2)}'),
+              _kpi('Efectivo ingresado', '\$${efectivo.toStringAsFixed(2)}'),
+              _kpi('Cambio entregado', '\$${cambio.toStringAsFixed(2)}'),
+              _kpi('Saldo actual', '\$${saldoActual.toStringAsFixed(2)}'),
             ],
           ),
           const SizedBox(height: 12),
@@ -2571,4 +2777,3 @@ class CortesScreen extends StatelessWidget {
       Text(v, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
     ]),
   );
-}
