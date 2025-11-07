@@ -1448,27 +1448,31 @@ class _ReportesScreenState extends State<ReportesScreen> {
   final TextEditingController _tasaComCtrl = TextEditingController(text: '0.00'); // % (ej. 1.8)
   double get _tasaCom => (double.tryParse(_tasaComCtrl.text) ?? 0) / 100.0;
 
-  DateTimeRange _rangoActual(){
-    final now = DateTime.now();
-    switch (_preset) {
-      case RangoPreset.sieteDias:
-        final ini = DateTime(now.year, now.month, now.day).subtract(const Duration(days: 6));
-        final fin = DateTime(now.year, now.month, now.day, 23, 59, 59);
-        return DateTimeRange(start: ini, end: fin);
-      case RangoPreset.unMes:
-        final ini = DateTime(now.year, now.month, 1);
-        final fin = DateTime(now.year, now.month + 1, 0, 23, 59, 59);
-        return DateTimeRange(start: ini, end: fin);
-      case RangoPreset.tresMeses:
-        final ini = DateTime(now.year, now.month - 2, 1);
-        final fin = DateTime(now.year, now.month + 1, 0, 23, 59, 59);
-        return DateTimeRange(start: ini, end: fin);
-      case RangoPreset.personalizado:
-        return _custom ??
-            DateTimeRange(
-              start: DateTime(now.year, now.month, now.day),
-              end: DateTime(now.year, now.month, now.day, 23, 59, 59),
-            );
+  DateTime _iniDia(DateTime d) => DateTime(d.year, d.month, d.day);
+  DateTime _finDia(DateTime d) => DateTime(d.year, d.month, d.day, 23, 59, 59, 999);
+
+  DateTimeRange _rangoActual() {
+  final now = DateTime.now();
+  switch (_preset) {
+    case RangoPreset.sieteDias:
+      final desde = _iniDia(now.subtract(const Duration(days: 6))); // hoy + 6 atrás = 7 días
+      final hasta = _finDia(now);
+      return DateTimeRange(start: desde, end: hasta);
+
+    case RangoPreset.unMes:
+      final desde = _iniDia(DateTime(now.year, now.month - 1, now.day)); // últimos ~30 días
+      final hasta = _finDia(now);
+      return DateTimeRange(start: desde, end: hasta);
+
+    case RangoPreset.tresMeses:
+      final desde = _iniDia(DateTime(now.year, now.month - 3, now.day)); // últimos ~90 días
+      final hasta = _finDia(now);
+      return DateTimeRange(start: desde, end: hasta);
+
+    case RangoPreset.personalizado:
+      final d = _custom?.start ?? now;
+      final h = _custom?.end ?? now;
+      return DateTimeRange(start: _iniDia(d), end: _finDia(h));
     }
   }
 
@@ -1551,27 +1555,29 @@ class _ReportesScreenState extends State<ReportesScreen> {
   Widget build(BuildContext context) {
     final r = _rangoActual();
     final k = _kpis();
-
     return Scaffold(
+
       appBar: AppBar(
         title: const Text('Reporte de ventas'),
         actions: [
           IconButton(
-          tooltip: 'Exportar PDF',
-          icon: const Icon(Icons.picture_as_pdf_outlined),
-          onPressed: _exportarPdf, // ← usa el método nuevo
-        ),
-          Padding(
-            padding: const EdgeInsets.only(right: 16),
-            child: Center(
-              child: Text(
-                '${r.end.toString().substring(0, 10)}  ${TimeOfDay.fromDateTime(DateTime.now()).format(context)}',
-                style: const TextStyle(fontWeight: FontWeight.w600),
-              ),
-            ),
+            tooltip: 'Imprimir ticket de reporte',
+            icon: const Icon(Icons.receipt_long),
+            onPressed: () {
+              final r = _rangoActual();
+              imprimirTicketReporteVentas(
+                context,
+                widget.repo,
+                desde: r.start,
+                hasta: r.end,
+              );
+            },
           ),
         ],
       ),
+
+
+
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: ListView(
@@ -2769,129 +2775,238 @@ class _CortesScreenState extends State<CortesScreen> {
     await Printing.layoutPdf(onLayout: (format) async => doc.save());
   }
 
-  // ===== Ticket de Corte (rollo 80mm) =====
-Future<void> _imprimirTicketCorte(
-  BuildContext context,
-  Repo repo,
-  String corteId,
-) async {
-  final doc = pw.Document();
-  final corte = repo.cortes.firstWhere((x) => x.id == corteId);
+    // ===== Ticket de Corte (rollo 80mm) =====
+  Future<void> _imprimirTicketCorte(
+    BuildContext context,
+    Repo repo,
+    String corteId,
+  ) async {
+    final doc = pw.Document();
+    final corte = repo.cortes.firstWhere((x) => x.id == corteId);
 
-  // Datos del corte
-  final ventas = repo.ventasDeCorte(corteId);
-  final tickets = ventas.length;
-  final items = ventas.fold<int>(
-    0,
-    (a, v) => a + v.lineas.fold<int>(0, (x, l) => x + l.cantidad.toInt()),
-  );
-  final total = ventas.fold<double>(0.0, (a, v) => a + v.total);
+    // Datos del corte
+    final ventas = repo.ventasDeCorte(corteId);
+    final tickets = ventas.length;
+    final items = ventas.fold<int>(
+      0,
+      (a, v) => a + v.lineas.fold<int>(0, (x, l) => x + l.cantidad.toInt()),
+    );
+    final total = ventas.fold<double>(0.0, (a, v) => a + v.total);
 
-  final efectivo = repo.efectivoDeCorte(corteId);
-  final cambio   = repo.cambioDeCorte(corteId);
-  final saldoIni = corte.saldoInicial;
-  final saldoFin = repo.saldoActualDeCorte(corteId);
+    final efectivo = repo.efectivoDeCorte(corteId);
+    final cambio   = repo.cambioDeCorte(corteId);
+    final saldoIni = corte.saldoInicial;
+    final saldoFin = repo.saldoActualDeCorte(corteId);
 
-  // Top productos
-  final Map<String, double> porProducto = {};
-  for (final v in ventas) {
-    for (final l in v.lineas) {
-      porProducto[l.producto.nombre] =
-          (porProducto[l.producto.nombre] ?? 0) + l.cantidad;
+    // Top productos
+    final Map<String, double> porProducto = {};
+    for (final v in ventas) {
+      for (final l in v.lineas) {
+        porProducto[l.producto.nombre] =
+            (porProducto[l.producto.nombre] ?? 0) + l.cantidad;
+      }
     }
-  }
-  final top = porProducto.entries.toList()
-    ..sort((a, b) => b.value.compareTo(a.value));
-  final top5 = top.take(5).toList();
+    final top = porProducto.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    final top5 = top.take(5).toList();
 
-  doc.addPage(
-    pw.Page(
-      pageFormat: pwlib.PdfPageFormat.roll80, // 👈 formato ticket
-      build: (pw.Context ctx) {
-        return pw.Column(
-          crossAxisAlignment: pw.CrossAxisAlignment.stretch,
-          children: [
-            _center('Mini Súper Garza', bold: true),
-            _center('Santiago, N.L.'),
-            _center('RFC: XAXX010101000'),
-            _sp(2),
-            _center('CORTE DE CAJA', bold: true),
-            _center('ID: ${corte.id}'),
-            _center(_fmtFecha(DateTime.now())),
-            _sp(2),
-            _linea(),
-            _kv('Inicio', _fmtFecha(corte.inicio)),
-            _kv('Cierre', corte.fin == null ? '(abierto)' : _fmtFecha(corte.fin!)),
-            _linea(),
-            _kv('Tickets', '$tickets'),
-            _kv('Artículos', '$items'),
-            _kv('Total vendido', _money(total)),
-            _sp(1),
-            _linea(),
-            _kv('Saldo inicial', _money(saldoIni)),
-            _kv('Efectivo ingresado', _money(efectivo)),
-            _kv('Cambio entregado', _money(cambio)),
-            _kv('Saldo actual', _money(saldoFin)),
-            _linea(),
-            if (top5.isNotEmpty) ...[
-              _center('Top productos', bold: true),
-              _sp(1),
-              ...top5.map((e) => pw.Row(
-                    mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                    children: [
-                      pw.Expanded(
-                        child: pw.Text(
-                          e.key.length > 20 ? '${e.key.substring(0, 20)}…' : e.key,
-                        ),
-                      ),
-                      pw.Text(e.value.toStringAsFixed(0)),
-                    ],
-                  )),
+    doc.addPage(
+      pw.Page(
+        pageFormat: pwlib.PdfPageFormat.roll80, // 👈 formato ticket
+        build: (pw.Context ctx) {
+          return pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+            children: [
+              _center('Mini Súper Garza', bold: true),
+              _center('Santiago, N.L.'),
+              _center('RFC: XAXX010101000'),
+              _sp(2),
+              _center('CORTE DE CAJA', bold: true),
+              _center('ID: ${corte.id}'),
+              _center(_fmtFecha(DateTime.now())),
+              _sp(2),
               _linea(),
+              _kv('Inicio', _fmtFecha(corte.inicio)),
+              _kv('Cierre', corte.fin == null ? '(abierto)' : _fmtFecha(corte.fin!)),
+              _linea(),
+              _kv('Tickets', '$tickets'),
+              _kv('Artículos', '$items'),
+              _kv('Total vendido', _money(total)),
+              _sp(1),
+              _linea(),
+              _kv('Saldo inicial', _money(saldoIni)),
+              _kv('Efectivo ingresado', _money(efectivo)),
+              _kv('Cambio entregado', _money(cambio)),
+              _kv('Saldo actual', _money(saldoFin)),
+              _linea(),
+              if (top5.isNotEmpty) ...[
+                _center('Top productos', bold: true),
+                _sp(1),
+                ...top5.map((e) => pw.Row(
+                      mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                      children: [
+                        pw.Expanded(
+                          child: pw.Text(
+                            e.key.length > 20 ? '${e.key.substring(0, 20)}…' : e.key,
+                          ),
+                        ),
+                        pw.Text(e.value.toStringAsFixed(0)),
+                      ],
+                    )),
+                _linea(),
+              ],
+              _center('¡Gracias por su trabajo!'),
+              _center('Mini Súper Garza'),
             ],
-            _center('¡Gracias por su trabajo!'),
-            _center('Mini Súper Garza'),
+          );
+        },
+      ),
+    );
+
+    await Printing.layoutPdf(onLayout: (_) async => doc.save());
+  }
+
+  // ===== Helpers para el ticket =====
+  pw.Widget _kv(String k, String v) => pw.Row(
+    mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+    children: [pw.Text(k), pw.Text(v, style: pw.TextStyle(fontWeight: pw.FontWeight.bold))],
+  );
+
+  pw.Widget _center(String t, {bool bold = false}) =>
+      pw.Align(alignment: pw.Alignment.center, child: pw.Text(
+        t,
+        style: pw.TextStyle(fontWeight: bold ? pw.FontWeight.bold : pw.FontWeight.normal),
+      ));
+
+  pw.Widget _sp(double h) => pw.SizedBox(height: h);
+
+  pw.Widget _linea() => pw.Padding(
+    padding: const pw.EdgeInsets.symmetric(vertical: 2),
+    child: pw.Text('-' * 32),
+  );
+
+  String _money(num v) => '\$${v.toStringAsFixed(2)}';
+
+  String _fmtFecha(DateTime f) =>
+      '${f.year}-${_2(f.month)}-${_2(f.day)}  ${_2(f.hour)}:${_2(f.minute)}';
+
+  String _2(int n) => n.toString().padLeft(2, '0');
+
+
+    Widget _kpi(String t, String v) => SizedBox(
+      width: 220,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(t, style: const TextStyle(color: Colors.black54)),
+        const SizedBox(height: 4),
+        Text(v, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+      ]),
+    );
+
+  Future<void> imprimirTicketReporteVentas(
+    BuildContext context,
+    Repo repo, {
+    required DateTime desde,
+    required DateTime hasta,
+  }) async {
+    // -------- Helpers locales --------
+    String _money(num v) => '\$${v.toStringAsFixed(2)}';
+    String _two(int n) => n.toString().padLeft(2, '0');
+    String _fecha(DateTime d) => '${_two(d.day)}/${_two(d.month)}/${d.year}';
+    String _fechaHora(DateTime d) => '${_two(d.day)}/${_two(d.month)}/${d.year} ${_two(d.hour)}:${_two(d.minute)}';
+    String _lineaStr([String ch = '-', int n = 32]) => List.filled(n, ch).join();
+
+    pw.Widget _center(String t, {bool bold = false, double size = 10}) => pw.Align(
+          alignment: pw.Alignment.center,
+          child: pw.Text(t, style: pw.TextStyle(fontSize: size, fontWeight: bold ? pw.FontWeight.bold : pw.FontWeight.normal)),
+        );
+    pw.Widget _sp(double h) => pw.SizedBox(height: h);
+    pw.Widget _kv(String k, String v) => pw.Row(
+          mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+          children: [
+            pw.Expanded(child: pw.Text(k, style: const pw.TextStyle(fontSize: 9))),
+            pw.SizedBox(width: 8),
+            pw.Text(v, style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold)),
           ],
         );
-      },
-    ),
-  );
+    pw.Widget _linea() => pw.Padding(padding: const pw.EdgeInsets.symmetric(vertical: 2), child: pw.Text(_lineaStr()));
 
-  await Printing.layoutPdf(onLayout: (_) async => doc.save());
-}
+    // -------- Datos del reporte --------
+    final d0 = DateTime(desde.year, desde.month, desde.day);
+    final d1 = DateTime(hasta.year, hasta.month, hasta.day + 1);
 
-// ===== Helpers para el ticket =====
-pw.Widget _kv(String k, String v) => pw.Row(
-  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-  children: [pw.Text(k), pw.Text(v, style: pw.TextStyle(fontWeight: pw.FontWeight.bold))],
-);
+    final ventas = repo.ventas
+        .where((v) => v.fecha.isAfter(d0.subtract(const Duration(microseconds: 1))) && v.fecha.isBefore(d1))
+        .toList();
 
-pw.Widget _center(String t, {bool bold = false}) =>
-    pw.Align(alignment: pw.Alignment.center, child: pw.Text(
-      t,
-      style: pw.TextStyle(fontWeight: bold ? pw.FontWeight.bold : pw.FontWeight.normal),
-    ));
+    final tickets  = ventas.length;
+    final total    = ventas.fold<double>(0, (a, v) => a + v.total);
+    final efectivo = ventas.fold<double>(0, (a, v) => a + v.efectivo);
+    final cambio   = ventas.fold<double>(0, (a, v) => a + v.cambio);
+    final utilidad = ventas.fold<double>(0, (a, v) {
+      final costo = v.lineas.fold<double>(0, (c, l) => c + (l.producto.precioCompra * l.cantidad));
+      return a + (v.total - costo);
+    });
 
-pw.Widget _sp(double h) => pw.SizedBox(height: h);
+    // Top 5 productos por cantidad
+    final Map<String, double> porProducto = {};
+    for (final v in ventas) {
+      for (final l in v.lineas) {
+        porProducto[l.producto.nombre] = (porProducto[l.producto.nombre] ?? 0) + l.cantidad;
+      }
+    }
+    final top = porProducto.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+    final top5 = top.take(5).toList();
 
-pw.Widget _linea() => pw.Padding(
-  padding: const pw.EdgeInsets.symmetric(vertical: 2),
-  child: pw.Text('-' * 32),
-);
+    // -------- Documento --------
 
-String _money(num v) => '\$${v.toStringAsFixed(2)}';
+    
+    // formato tipo “ticket” (~58 mm). Ajusta el ancho si lo necesitas.
+    final ticketFormat = pwlib.PdfPageFormat(180, double.infinity) // ~58 mm útiles ≈ 170–180 pt
+        .copyWith(
+          marginLeft: 10,
+          marginRight: 10,
+          marginTop: 10,
+          marginBottom: 10,
+        );
 
-String _fmtFecha(DateTime f) =>
-    '${f.year}-${_2(f.month)}-${_2(f.day)}  ${_2(f.hour)}:${_2(f.minute)}';
 
-String _2(int n) => n.toString().padLeft(2, '0');
+    final doc = pw.Document();
+    doc.addPage(
+      pw.Page(
+        pageFormat: ticketFormat,
+        build: (_) => pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.start,
+          children: [
+            _center('Mini Súper Garza', bold: true),
+            _center('Reporte de Ventas'),
+            _sp(4),
+            _kv('Desde', _fecha(d0)),
+            _kv('Hasta', _fecha(hasta)),
+            _linea(),
+            _kv('Tickets', '$tickets'),
+            _kv('Total', _money(total)),
+            _kv('Efectivo', _money(efectivo)),
+            _kv('Cambio', _money(cambio)),
+            _kv('Utilidad', _money(utilidad)),
+            if (top5.isNotEmpty) ...[
+              _linea(),
+              _center('Top 5 productos', bold: true),
+              _sp(2),
+              ...top5.map((e) => pw.Row(
+                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                children: [
+                  pw.Expanded(child: pw.Text(e.key, style: const pw.TextStyle(fontSize: 9))),
+                  pw.Text(e.value.toStringAsFixed(0), style: const pw.TextStyle(fontSize: 9)),
+                ],
+              )),
+            ],
+            _sp(8),
+            _center('Generado: ${_fechaHora(DateTime.now())}'),
+          ],
+        ),
+      ),
+    );
 
+    await Printing.layoutPdf(onLayout: (format) async => doc.save());
+  }
 
-  Widget _kpi(String t, String v) => SizedBox(
-    width: 220,
-    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text(t, style: const TextStyle(color: Colors.black54)),
-      const SizedBox(height: 4),
-      Text(v, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-    ]),
-  );
