@@ -1444,10 +1444,6 @@ class _ReportesScreenState extends State<ReportesScreen> {
   DateTimeRange? _custom;
   TabProductos _tab = TabProductos.menorRotacion;
 
-  // Config comisiones (editable)
-  final TextEditingController _tasaComCtrl = TextEditingController(text: '0.00'); // % (ej. 1.8)
-  double get _tasaCom => (double.tryParse(_tasaComCtrl.text) ?? 0) / 100.0;
-
   DateTime _iniDia(DateTime d) => DateTime(d.year, d.month, d.day);
   DateTime _finDia(DateTime d) => DateTime(d.year, d.month, d.day, 23, 59, 59, 999);
 
@@ -1486,7 +1482,7 @@ class _ReportesScreenState extends State<ReportesScreen> {
   }
 
   // Totales principales
-  ({double total, double utilidad, double comisiones, int tickets}) _kpis() {
+  ({double total, double utilidad, int tickets}) _kpis() {
     final vs = _ventasRango();
     double total = 0, utilidad = 0;
     for (final v in vs) {
@@ -1501,8 +1497,7 @@ class _ReportesScreenState extends State<ReportesScreen> {
         utilidad += (l.producto.precioVenta - costoUnit) * l.cantidad;
       }
     }
-    final comisiones = total * _tasaCom;
-    return (total: total, utilidad: utilidad, comisiones: comisiones, tickets: vs.length);
+    return (total: total, utilidad: utilidad, tickets: vs.length);
   }
 
   // Agregados por producto
@@ -1619,20 +1614,6 @@ class _ReportesScreenState extends State<ReportesScreen> {
                     DropdownMenuItem(value: RangoPreset.personalizado, child: Text('Personalizado')),
                   ],
                 ),
-                const SizedBox(width: 12),
-                // Tasa de comisión (%)
-                SizedBox(
-                  width: 120,
-                  child: TextField(
-                    controller: _tasaComCtrl,
-                    onSubmitted: (_) => setState(() {}),
-                    decoration: const InputDecoration(
-                      labelText: 'Comisión %',
-                      isDense: true,
-                    ),
-                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                  ),
-                ),
               ],
             ),
             const SizedBox(height: 16),
@@ -1644,7 +1625,6 @@ class _ReportesScreenState extends State<ReportesScreen> {
               children: [
                 _KpiCard(title: 'VENTA TOTAL', value: _fmtMoney(k.total), icon: Icons.shopping_bag),
                 _KpiCard(title: 'GANANCIAS / UTILIDAD EN POS', value: _fmtMoney(k.utilidad), icon: Icons.ssid_chart),
-                _KpiCard(title: 'COMISIONES', value: _fmtMoney(k.comisiones), icon: Icons.receipt_long),
               ],
             ),
 
@@ -1654,14 +1634,13 @@ class _ReportesScreenState extends State<ReportesScreen> {
             const Text('Cantidad de ventas', style: TextStyle(fontWeight: FontWeight.w700)),
             const SizedBox(height: 8),
             _BarChart(
-              series: const ['Transacciones', 'POS', 'Adquiriente'],
+              series: const ['Transacciones', 'POS'],
               // Para simplificar: Transacciones = #tickets (lo llevamos a dinero como tickets*promedio para escalar) 
               // pero aquí lo mostramos como conteo sobre el eje derecho en etiqueta.
-              values: [k.tickets.toDouble(), k.total, k.comisiones],
+              values: [k.tickets.toDouble(), k.total],
               valueLabels: [
                 '${k.tickets}',
                 _fmtMoney(k.total),
-                _fmtMoney(k.comisiones),
               ],
             ),
 
@@ -1789,10 +1768,6 @@ Future<void> _exportarPdf() async {
             pw.TableRow(children: [
               pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('Utilidad estimada')),
               pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text(_m(k.utilidad))),
-            ]),
-            pw.TableRow(children: [
-              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('Comisiones')),
-              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text(_m(k.comisiones))),
             ]),
             pw.TableRow(children: [
               pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('Tickets')),
