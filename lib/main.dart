@@ -2784,6 +2784,16 @@ class _CortesScreenState extends State<CortesScreen> {
     final top = porProducto.entries.toList()
       ..sort((a, b) => b.value.compareTo(a.value));
     final top5 = top.take(5).toList();
+    
+    String _san(String s) => s
+    .replaceAll('\r', '')
+    .replaceAll('\n', ' ')
+    .replaceAll('\t', ' ')
+    .replaceAll('\u00A0', ' ')                 // NBSP
+    .replaceAll(RegExp(r'[\u200B-\u200D]'), '')// zero-width chars
+    .replaceAll('\uFEFF', '')                  // BOM
+    .replaceAll(RegExp(r'[\u0000-\u001F\u007F]'), '') // control chars
+    .trimRight();
 
     doc.addPage(
       pw.Page(
@@ -2817,17 +2827,23 @@ class _CortesScreenState extends State<CortesScreen> {
               if (top5.isNotEmpty) ...[
                 _center('Top productos', bold: true),
                 _sp(1),
-                ...top5.map((e) => pw.Row(
-                      mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                      children: [
-                        pw.Expanded(
-                          child: pw.Text(
-                            e.key.length > 20 ? '${e.key.substring(0, 20)}…' : e.key,
-                          ),
-                        ),
-                        pw.Text(e.value.toStringAsFixed(0)),
-                      ],
-                    )),
+              ...top5.map((e) => pw.Row(
+                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                children: [
+                  pw.Expanded(
+                    child: pw.Text(
+                      e.key,
+                      style: const pw.TextStyle(fontSize: 9),
+                      softWrap: true, // 👈 permite salto de línea
+                    ),
+                  ),
+                  pw.Text(
+                    e.value.toStringAsFixed(0),
+                    style: const pw.TextStyle(fontSize: 9),
+                  ),
+                ],
+              )),
                 _linea(),
               ],
               _center('¡Gracias por su trabajo!'),
